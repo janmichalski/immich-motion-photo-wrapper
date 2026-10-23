@@ -1,0 +1,13 @@
+# Merge this service configuration into your existing Compose override.
+# Do not overwrite an existing override file without reviewing its contents.
+services:
+  immich-server:
+    environment:
+      FFMPEG_PATH: /usr/local/bin/ffmpeg-motion-photo-wrapper
+    volumes:
+      - type: bind
+        source: ./hotfixes/ffmpeg-motion-photo-wrapper
+        target: /usr/local/bin/ffmpeg-motion-photo-wrapper
+        read_only: true
+        bind:
+          create_host_path: false

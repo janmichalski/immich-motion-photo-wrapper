@@ -1,0 +1,98 @@
+#!/usr/bin/bash
+set -u
+
+REAL_FFMPEG="/usr/bin/ffmpeg"
+REAL_FFPROBE="/usr/bin/ffprobe"
+PROBE_TIMEOUT="/usr/bin/timeout"
+args=("$@")
+
+pass_through() { exec "$REAL_FFMPEG" "${args[@]}"; }
+
+input=""
+input_count=0
+has_map=0
+single_frame=0
+complex_filter=0
+thumbnail_paths=0
+for ((i=0; i<${#args[@]}; i++)); do
+    case "${args[i]}" in
+        -i)
+            ((input_count+=1))
+            ((i+1 < ${#args[@]})) || pass_through
+            input="${args[i+1]}"
+            ;;
+        -map|-map=*) has_map=1 ;;
+        -filter_complex|-filter_complex=*|-filter_complex_script|-lavfi)
+            complex_filter=1
+            ;;
+        -frames:v|-vframes)
+            if ((i+1 < ${#args[@]})) && [[ "${args[i+1]}" == "1" ]]; then
+                single_frame=1
+            fi
+            ;;
+        /data/thumbs/*) ((thumbnail_paths+=1)) ;;
+    esac
+done
+
+# Only the single-input, single-image thumbnail command used by Immich.
+((input_count == 1 && has_map == 0 && complex_filter == 0 &&
+  single_frame == 1 && thumbnail_paths == 1)) || pass_through
+((${#args[@]} > 0)) || pass_through
+output_index=$((${#args[@]}-1))
+case "${args[output_index]}" in
+    /data/thumbs/*.[wW][eE][bB][pP]|/data/thumbs/*.[jJ][pP][eE][gG]|/data/thumbs/*.[jJ][pP][gG]) ;;
+    *) pass_through ;;
+esac
+case "$input" in
+    /external/photos/*.[mM][pP]4) ;;
+    *) pass_through ;;
+esac
+[[ -f "$input" && -r "$input" && -x "$PROBE_TIMEOUT" ]] || pass_through
+
+# Incomplete metadata or a failed/stalled probe must not change stream mapping.
+if ! probe_output="$("$PROBE_TIMEOUT" --kill-after=2s 15s "$REAL_FFPROBE" \
+    -v error -select_streams v \
+    -show_entries stream=index,codec_name,duration,nb_frames \
+    -of compact=p=0:nk=0 "$input" 2>/dev/null)"; then
+    pass_through
+fi
+streams=()
+while IFS= read -r line; do
+    [[ -n "$line" ]] && streams+=("$line")
+done <<< "$probe_output"
+((${#streams[@]} == 2)) || pass_through
+
+declare -A first=() second=()
+parse_fields() {
+    local line="$1" field key value
+    local -n result="$2"
+    local -a fields=()
+    IFS='|' read -r -a fields <<< "$line"
+    for field in "${fields[@]}"; do
+        [[ "$field" == *=* ]] || continue
+        key="${field%%=*}"
+        value="${field#*=}"
+        case "$key" in
+            index|codec_name|duration|nb_frames) result["$key"]="$value" ;;
+        esac
+    done
+}
+parse_fields "${streams[0]}" first
+parse_fields "${streams[1]}" second
+is_zero_duration() { [[ "$1" =~ ^0+([.]0+)?$ ]]; }
+is_positive_duration() {
+    [[ "$1" =~ ^[0-9]+([.][0-9]+)?$ ]] && ! is_zero_duration "$1"
+}
+
+# Keep the proven two-HEVC-stream layout; do not guess when metadata is missing.
+if [[ "${first[index]-}" == 0 && "${second[index]-}" == 1 &&
+      "${first[codec_name]-}" == hevc && "${second[codec_name]-}" == hevc &&
+      "${first[nb_frames]-}" =~ ^0*([2-9]|[1-9][0-9]+)$ &&
+      "${second[nb_frames]-}" == 1 ]] &&
+   is_positive_duration "${first[duration]-}" &&
+   is_zero_duration "${second[duration]-}"; then
+    # Avoid recording private photo names and paths in Docker logs.
+    printf '%s\n' '[immich-motion-photo-hotfix] selecting video stream 0 for thumbnail' >&2
+    exec "$REAL_FFMPEG" "${args[@]:0:output_index}" -map 0:0 "${args[output_index]}"
+fi
+pass_through
