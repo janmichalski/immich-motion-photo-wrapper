@@ -1,17 +1,31 @@
 # Immich Motion Photo thumbnail wrapper
 
-A narrowly scoped FFmpeg wrapper for a Motion Photo thumbnail failure in Immich. It selects the actual video stream instead of allowing FFmpeg to select a higher-resolution, single-frame stream.
+An FFmpeg wrapper that helps Immich generate previews for a specific type of Motion Photo file. This is an independent workaround that runs alongside Immich; it requires no application source changes or custom Docker image.
 
-This is an independent local workaround, not an official Immich fix. It does not modify Immich source code or require a custom Docker image.
+## ELI5
 
-## The problem
+You open Immich to browse your photos, but some Motion Photos have no thumbnail. Immich has the file, but fails to create the small preview you need to see it in your library.
+
+The thumbnail tool can choose the wrong part of the file. This wrapper points it to the right part. After installation, retrying the failed thumbnail jobs can restore normal previews for affected items.
+
+Your original photos and videos stay unchanged.
+
+## What does this fix in everyday use?
+
+The visible result is a usable preview in your library for items affected by this particular failure. Installing the wrapper does not automatically repair previously failed jobs: you need to retry thumbnail generation for those items. Start with one known affected asset before processing more.
+
+The workaround applies to thumbnail generation. It does not change motion playback or address every cause of missing previews.
+
+## Why thumbnail generation fails
 
 Some Motion Photo MP4 files contain two HEVC video streams:
 
 - Stream 0 contains the moving video, with more than one frame and a positive duration.
 - Stream 1 contains one frame, reports zero duration, and can have a higher resolution.
 
-FFmpeg's automatic selection can choose the second stream. Immich's thumbnail filter chain may then produce no frames and fail, including with exit code 244. The wrapper adds an explicit `-map 0:0` for the confirmed layout.
+FFmpeg's automatic stream selection can favor the higher-resolution stream. Immich's thumbnail filter chain may then produce no frames and fail, including with exit code 244.
+
+For the confirmed layout, the wrapper adds `-map 0:0` to select the actual video stream. The remaining command arguments are preserved.
 
 ## Scope and safeguards
 
@@ -28,7 +42,7 @@ Other commands are passed to the original FFmpeg unchanged. The wrapper preserve
 
 The additional `ffprobe` call has a 15-second timeout, followed by a 2-second forced-termination grace period. A probe failure or timeout causes the original command to run unchanged; this limits the extra probe, not the subsequent FFmpeg process. The wrapper's own message does not include input filenames or paths. FFmpeg and Immich may still log their normal diagnostic information.
 
-This deliberately does **not** attempt to select streams for every possible media layout. Different stream indices, missing metadata, other codecs, or other library mount paths are outside its tested scope.
+Different stream indices, missing metadata, other codecs, or other library mount paths are outside its tested scope.
 
 ## Requirements
 
@@ -74,7 +88,7 @@ docker compose up -d --no-deps --force-recreate immich-server
 
 Recreation causes a short server interruption and ensures that a file bind mount sees the installed script. Machine learning, Redis/Valkey, PostgreSQL, and source media do not need to be recreated or changed.
 
-Confirm that the server starts successfully and becomes healthy. Do not regenerate an entire library just to check installation; test one known affected asset first.
+Confirm that the server starts successfully and becomes healthy. In Immich, retry thumbnail generation for one known affected asset and check that its preview appears. The menu or job controls may differ between Immich versions.
 
 ## Tests
 
